@@ -333,7 +333,7 @@ class XFEMCrackPINN:
         return [eq_x, eq_y]
     
     def boundary_conditions(self, geom):
-        """Define boundary conditions for the crack problem."""
+        """Define boundary conditions for the crack problem - Mode I loading."""
         
         def bottom_boundary(x, on_boundary):
             return on_boundary and np.isclose(x[1], 0.0)
@@ -347,28 +347,30 @@ class XFEMCrackPINN:
         def right_boundary(x, on_boundary):
             return on_boundary and np.isclose(x[0], self.domain_size[0])
         
-        # Fixed bottom boundary (u_x = u_y = 0)
-        bc_bottom_x = dde.icbc.DirichletBC(
-            geom, lambda x: np.zeros((len(x), 1)), bottom_boundary, component=0
+        # Mode I loading: tension in y-direction
+        # Top boundary: apply tensile displacement
+        def top_displacement_y(x):
+            return np.full((len(x), 1), self.traction * self.domain_size[1] / self.E)
+        
+        bc_top_y = dde.icbc.DirichletBC(
+            geom, top_displacement_y, top_boundary, component=1
         )
+        
+        # Bottom boundary: fixed in y-direction
         bc_bottom_y = dde.icbc.DirichletBC(
             geom, lambda x: np.zeros((len(x), 1)), bottom_boundary, component=1
         )
         
-        # Traction on top boundary (σ_yy = t, σ_xy = 0)
-        def top_traction_y(x):
-            return np.full((len(x), 1), self.traction)
+        # Left and right boundaries: free in x-direction (no constraint)
+        # Only constrain at center point to prevent rigid body motion
+        def center_point(x, on_boundary):
+            return on_boundary and np.isclose(x[0], 0.0) and np.isclose(x[1], self.domain_size[1]/2)
         
-        bc_top_traction = dde.icbc.NeumannBC(
-            geom, top_traction_y, top_boundary, component=1
+        bc_center_x = dde.icbc.DirichletBC(
+            geom, lambda x: np.zeros((len(x), 1)), center_point, component=0
         )
         
-        # Symmetry on left boundary (u_x = 0 if centered crack)
-        bc_left_x = dde.icbc.DirichletBC(
-            geom, lambda x: np.zeros((len(x), 1)), left_boundary, component=0
-        )
-        
-        return [bc_bottom_x, bc_bottom_y, bc_top_traction, bc_left_x]
+        return [bc_bottom_y, bc_top_y, bc_center_x]
     
     def setup_problem(self, num_domain: int = 26520, num_boundary: int = 500):
         """
@@ -635,45 +637,64 @@ class XFEMCrackPINN:
         von_mises = self.compute_von_mises_stress(x_test, y_pred)
         von_mises = von_mises.reshape(n, n)
         
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        # Create figure with better layout
+        fig, axes = plt.subplots(1, 3, figsize=(20, 5.5))
+        
+        # Define crack line coordinates
+        crack_x = [self.crack_center[0] - self.crack_half_length, 
+                   self.crack_center[0] + self.crack_half_length]
+        crack_y = [self.crack_center[1], self.crack_center[1]]
         
         # Displacement u_x
-        im0 = axes[0].contourf(X, Y, u_x, levels=20, cmap='RdBu_r')
-        axes[0].set_title("Displacement $u_x$")
-        axes[0].set_xlabel("x")
-        axes[0].set_ylabel("y")
-        axes[0].plot([self.crack_center[0] - self.crack_half_length, 
-                     self.crack_center[0] + self.crack_half_length],
-                    [self.crack_center[1], self.crack_center[1]], 'k-', linewidth=3, label='Crack')
-        axes[0].legend()
+        im0 = axes[0].contourf(X, Y, u_x, levels=30, cmap='RdBu_r')
+        axes[0].plot(crack_x, crack_y, 'k-', linewidth=4)
+        axes[0].set_title("Displacement $u_x$", fontsize=14, fontweight='bold')
+        axes[0].set_xlabel("x", fontsize=12)
+        axes[0].set_ylabel("y", fontsize=12)
         axes[0].set_aspect('equal')
-        plt.colorbar(im0, ax=axes[0], label='$u_x$')
+        cbar0 = plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
+        cbar0.ax.tick_params(labelsize=10)
+        axes[0].grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
         
         # Displacement u_y
-        im1 = axes[1].contourf(X, Y, u_y, levels=20, cmap='RdBu_r')
-        axes[1].set_title("Displacement $u_y$")
-        axes[1].set_xlabel("x")
-        axes[1].set_ylabel("y")
-        axes[1].plot([self.crack_center[0] - self.crack_half_length, 
-                     self.crack_center[0] + self.crack_half_length],
-                    [self.crack_center[1], self.crack_center[1]], 'k-', linewidth=3, label='Crack')
-        axes[1].legend()
+        im1 = axes[1].contourf(X, Y, u_y, levels=30, cmap='RdBu_r')
+        axes[1].plot(crack_x, crack_y, 'k-', linewidth=4)
+        axes[1].set_title("Displacement $u_y$", fontsize=14, fontweight='bold')
+        axes[1].set_xlabel("x", fontsize=12)
+        axes[1].set_ylabel("y", fontsize=12)
         axes[1].set_aspect('equal')
-        plt.colorbar(im1, ax=axes[1], label='$u_y$')
+        cbar1 = plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+        cbar1.ax.tick_params(labelsize=10)
+        axes[1].grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
         
-        # Von Mises stress
-        im2 = axes[2].contourf(X, Y, von_mises, levels=20, cmap='jet')
-        axes[2].set_title("Von Mises Stress")
-        axes[2].set_xlabel("x")
-        axes[2].set_ylabel("y")
-        axes[2].plot([self.crack_center[0] - self.crack_half_length, 
-                     self.crack_center[0] + self.crack_half_length],
-                    [self.crack_center[1], self.crack_center[1]], 'k-', linewidth=3, label='Crack')
-        axes[2].legend()
+        # Von Mises stress - use symmetric log scale to handle stress concentration
+        # Clip extreme values for better visualization
+        von_mises_clipped = np.clip(von_mises, 0, np.percentile(von_mises, 99))
+        
+        im2 = axes[2].contourf(X, Y, von_mises_clipped, levels=30, cmap='jet')
+        axes[2].plot(crack_x, crack_y, 'k-', linewidth=4)
+        # Mark crack tips with circles
+        axes[2].plot([self.crack_tip1[0], self.crack_tip2[0]], 
+                    [self.crack_tip1[1], self.crack_tip2[1]], 
+                    'ko', markersize=8, markerfacecolor='white', markeredgewidth=2)
+        axes[2].set_title("Von Mises Stress", fontsize=14, fontweight='bold')
+        axes[2].set_xlabel("x", fontsize=12)
+        axes[2].set_ylabel("y", fontsize=12)
         axes[2].set_aspect('equal')
-        plt.colorbar(im2, ax=axes[2], label='Von Mises')
+        cbar2 = plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+        cbar2.ax.tick_params(labelsize=10)
+        cbar2.set_label('$\sigma_{vm}$', fontsize=11)
+        axes[2].grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        
+        # Add text annotation for crack tips
+        axes[2].text(0.02, 0.98, 'White circles: Crack tips', 
+                    transform=axes[2].transAxes, fontsize=9,
+                    verticalalignment='top', bbox=dict(boxstyle='round', 
+                    facecolor='wheat', alpha=0.8))
         
         plt.tight_layout()
+        plt.savefig('xpinn_results.png', dpi=150, bbox_inches='tight')
+        print("Saved figure as 'xpinn_results.png'")
         plt.show()
         
         # Plot Total Potential Energy vs Epochs with standard deviation
