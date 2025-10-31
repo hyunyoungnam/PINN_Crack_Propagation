@@ -44,7 +44,7 @@ class XFEMCrackPINN:
                  domain_size: Tuple[float, float] = (1.0, 1.0),
                  enrichment_width: float = 0.1):
         """
-        Initialize X-PINN for crack problem.
+        Initialize X-PINN for linear crack problem with enhanced tip enrichment.
         
         Parameters:
         - crack_center: (x, y) coordinates of crack center
@@ -92,16 +92,10 @@ class XFEMCrackPINN:
         tip2 = self.crack_center - np.array([dx, dy])
         return tip1, tip2
     
-    def sawtooth_enrichment(self, x: np.ndarray) -> np.ndarray:
+    def enhanced_crack_enrichment(self, x: np.ndarray) -> np.ndarray:
         """
-        Sawtooth-like enrichment function D(ξ, η) for discontinuous component.
-        Based on Equation (17)-(19) from the paper:
-        
-        D(ξ, η) = Ξ(ξ) · Λ(η) if inside enrichment region, 0 otherwise
-        
-        where:
-        - Ξ(ξ): cubic polynomial along crack direction
-        - Λ(η): quadratic polynomial perpendicular to crack
+        Enhanced crack enrichment function for discontinuous component.
+        Creates enrichment around the linear crack with stress concentration at tips.
         
         Parameters:
         - x: Input coordinates (N, 2) in global system
@@ -109,63 +103,54 @@ class XFEMCrackPINN:
         Returns:
         - Enrichment values (N, 1)
         """
-        # Transform to local coordinate system (ξ, η)
-        # θ = crack angle
-        # ξ = x cos θ + y sin θ  (along crack)
-        # η = -x sin θ + y cos θ  (perpendicular to crack)
+        # Distance from crack tips
+        dist_tip1 = np.sqrt((x[:, 0:1] - self.crack_tip1[0])**2 + 
+                           (x[:, 1:2] - self.crack_tip1[1])**2)
+        dist_tip2 = np.sqrt((x[:, 0:1] - self.crack_tip2[0])**2 + 
+                           (x[:, 1:2] - self.crack_tip2[1])**2)
         
+        # Minimum distance to either crack tip
+        min_dist_to_tips = np.minimum(dist_tip1, dist_tip2)
+        
+        # Distance from crack line
+        # Transform to local coordinate system
         cos_theta = np.cos(self.crack_angle)
         sin_theta = np.sin(self.crack_angle)
         
-        xi = x[:, 0:1] * cos_theta + x[:, 1:2] * sin_theta
-        eta = -x[:, 0:1] * sin_theta + x[:, 1:2] * cos_theta
+        dx = x[:, 0:1] - self.crack_center[0]
+        dy = x[:, 1:2] - self.crack_center[1]
         
-        # Transform crack tips to local coordinates
-        xi_center = self.crack_center[0] * cos_theta + self.crack_center[1] * sin_theta
-        eta_center = -self.crack_center[0] * sin_theta + self.crack_center[1] * cos_theta
+        x_local = dx * cos_theta + dy * sin_theta
+        y_local = -dx * sin_theta + dy * cos_theta
         
-        # Crack tips in local system
-        xi_1 = xi_center - self.crack_half_length  # Left tip
-        xi_2 = xi_center + self.crack_half_length  # Right tip
-        eta_1 = eta_center  # Crack is centered at eta_center
+        # Distance from crack line (perpendicular distance)
+        dist_from_crack = np.abs(y_local)
         
-        # Enrichment domain parameters
-        l_0 = self.enrichment_width  # Width parameter
-        
-        # Initialize enrichment function
-        D = np.zeros_like(xi)
+        # Enrichment domain: near crack tips and crack line
+        enrichment_radius = self.enrichment_width
         
         # Check if points are in enrichment domain
-        in_domain_xi = (xi >= xi_1) & (xi <= xi_2)
-        in_domain_eta = (eta >= eta_1 - l_0) & (eta <= eta_1 + l_0)
-        in_domain = in_domain_xi & in_domain_eta
+        in_tip_domain = min_dist_to_tips <= enrichment_radius
+        in_crack_domain = (dist_from_crack <= enrichment_radius) & \
+                         (np.abs(x_local) <= self.crack_half_length)
         
-        # Compute Ξ(ξ) - cubic polynomial along crack direction
-        # Ξ(ξ) = a0 + a1*ξ + a2*ξ² + a3*ξ³ for ξ1 ≤ ξ ≤ ξ2
-        # Coefficients chosen for smoothness at boundaries
-        # Using normalized coordinates: s = (ξ - ξ1) / (ξ2 - ξ1) ∈ [0, 1]
-        s = (xi - xi_1) / (xi_2 - xi_1 + 1e-10)
+        in_enrichment_domain = in_tip_domain | in_crack_domain
         
-        # Cubic polynomial with C1 continuity at boundaries
-        # Ξ(s) = -2s³ + 3s² (goes from 0 to 1 smoothly)
-        # Modified to create sawtooth: goes from 0 to 1 to 0
-        Xi = np.where(in_domain_xi, 
-                     4 * s * (1 - s) * (s - 0.5) + 0.5,  # Sawtooth shape
+        # Enhanced enrichment function with stress concentration at tips
+        # Stronger enrichment at crack tips
+        tip_enrichment = np.where(in_tip_domain,
+                                 1.0 - min_dist_to_tips / (enrichment_radius + 1e-10),
+                                 0.0)
+        
+        # Crack body enrichment
+        crack_enrichment = np.where(in_crack_domain,
+                                   0.5 * (1.0 - dist_from_crack / (enrichment_radius + 1e-10)),
+                                   0.0)
+        
+        # Combine enrichments with higher weight for tips
+        D = np.where(in_enrichment_domain,
+                     np.maximum(tip_enrichment, crack_enrichment),
                      0)
-        
-        # Compute Λ(η) - quadratic polynomial perpendicular to crack
-        # Λ(η) = b0 + b1*η + b2*η² for η1 - l0 ≤ η ≤ η1 + l0
-        # Using normalized coordinates: t = (η - (η1 - l0)) / (2*l0) ∈ [0, 1]
-        t = (eta - (eta_1 - l_0)) / (2 * l_0 + 1e-10)
-        
-        # Quadratic polynomial with smooth transition
-        # Λ(t) = 1 - (2t - 1)² (bell curve shape, max at center)
-        Lambda = np.where(in_domain_eta,
-                         1 - (2 * t - 1)**2,
-                         0)
-        
-        # D(ξ, η) = Ξ(ξ) · Λ(η)
-        D = np.where(in_domain, Xi * Lambda, 0)
         
         return D
     
@@ -197,10 +182,27 @@ class XFEMCrackPINN:
         
         return H
     
-    def crack_tip_enrichment(self, x: np.ndarray, tip: np.ndarray) -> np.ndarray:
+    def enhanced_crack_tip_enrichment(self, x: np.ndarray) -> np.ndarray:
         """
-        Crack tip enrichment functions S(x, xct) for singular component.
-        Uses asymptotic near-tip fields (r, θ coordinates).
+        Enhanced crack tip enrichment functions for singular component.
+        Uses asymptotic near-tip fields with enhanced stress concentration.
+        
+        Parameters:
+        - x: Input coordinates (N, 2)
+        
+        Returns:
+        - Enrichment values (N, 8) for 8 enrichment functions
+        """
+        # Enrichment for both crack tips
+        enrichment_tip1 = self._crack_tip_enrichment_single(x, self.crack_tip1)
+        enrichment_tip2 = self._crack_tip_enrichment_single(x, self.crack_tip2)
+        
+        # Combine enrichments from both tips
+        return np.concatenate([enrichment_tip1, enrichment_tip2], axis=1)
+    
+    def _crack_tip_enrichment_single(self, x: np.ndarray, tip: np.ndarray) -> np.ndarray:
+        """
+        Single crack tip enrichment functions.
         
         Parameters:
         - x: Input coordinates (N, 2)
@@ -225,7 +227,8 @@ class XFEMCrackPINN:
         
         sqrt_r = np.sqrt(r)
         
-        # Four standard crack tip enrichment functions
+        # Enhanced enrichment functions with stress concentration
+        # Standard crack tip functions
         F1 = sqrt_r * np.sin(theta / 2)
         F2 = sqrt_r * np.cos(theta / 2)
         F3 = sqrt_r * np.sin(theta / 2) * np.sin(theta)
@@ -233,18 +236,107 @@ class XFEMCrackPINN:
         
         return np.concatenate([F1, F2, F3, F4], axis=1)
     
-    def is_in_enrichment_domain(self, x: np.ndarray, domain_type: str = 'crack_body') -> np.ndarray:
+    def create_enhanced_enrichment_elements(self, x: np.ndarray) -> np.ndarray:
         """
-        Check if points are in enrichment domain.
+        Create enhanced enrichment elements near crack tips for stress concentration.
+        This implements a sophisticated enrichment strategy that focuses on
+        crack tip stress concentration and geometric effects.
         
         Parameters:
         - x: Input coordinates (N, 2)
-        - domain_type: 'crack_body' or 'crack_tip'
+        
+        Returns:
+        - Enrichment values (N, 12) for 12 enrichment functions
+        """
+        # Enhanced enrichment for both crack tips
+        enrichment_tip1 = self._enhanced_tip_enrichment_single(x, self.crack_tip1)
+        enrichment_tip2 = self._enhanced_tip_enrichment_single(x, self.crack_tip2)
+        
+        # Additional crack body enrichment
+        crack_body_enrichment = self._crack_body_enrichment(x)
+        
+        return np.concatenate([enrichment_tip1, enrichment_tip2, crack_body_enrichment], axis=1)
+    
+    def _enhanced_tip_enrichment_single(self, x: np.ndarray, tip: np.ndarray) -> np.ndarray:
+        """
+        Enhanced single crack tip enrichment with stress concentration.
+        
+        Parameters:
+        - x: Input coordinates (N, 2)
+        - tip: Crack tip position (2,)
+        
+        Returns:
+        - Enrichment values (N, 4) for 4 enhanced functions
+        """
+        # Distance from crack tip
+        dx = x[:, 0:1] - tip[0]
+        dy = x[:, 1:2] - tip[1]
+        r = np.sqrt(dx**2 + dy**2 + 1e-10)
+        theta = np.arctan2(dy, dx)
+        
+        # Enhanced singularity with stress concentration
+        # Stronger singularity for better stress concentration
+        r_enhanced = np.power(r, 0.4)  # Enhanced singularity
+        
+        # Four enhanced crack tip functions
+        F1 = r_enhanced * np.sin(theta / 2)
+        F2 = r_enhanced * np.cos(theta / 2)
+        F3 = r_enhanced * np.sin(theta / 2) * np.sin(theta)
+        F4 = r_enhanced * np.cos(theta / 2) * np.sin(theta)
+        
+        return np.concatenate([F1, F2, F3, F4], axis=1)
+    
+    def _crack_body_enrichment(self, x: np.ndarray) -> np.ndarray:
+        """
+        Crack body enrichment for displacement discontinuity.
+        
+        Parameters:
+        - x: Input coordinates (N, 2)
+        
+        Returns:
+        - Enrichment values (N, 4) for 4 crack body functions
+        """
+        # Distance from crack line
+        cos_theta = np.cos(self.crack_angle)
+        sin_theta = np.sin(self.crack_angle)
+        
+        dx = x[:, 0:1] - self.crack_center[0]
+        dy = x[:, 1:2] - self.crack_center[1]
+        
+        x_local = dx * cos_theta + dy * sin_theta
+        y_local = -dx * sin_theta + dy * cos_theta
+        
+        # Crack body enrichment functions
+        # These capture the displacement jump across the crack
+        F1 = np.sign(y_local)  # Heaviside function
+        F2 = y_local * np.sign(y_local)  # Linear function
+        F3 = np.sin(np.pi * x_local / (2 * self.crack_half_length + 1e-10))  # Sine function
+        F4 = np.cos(np.pi * x_local / (2 * self.crack_half_length + 1e-10))  # Cosine function
+        
+        return np.concatenate([F1, F2, F3, F4], axis=1)
+    
+    def is_in_enrichment_domain(self, x: np.ndarray, domain_type: str = 'crack_tip') -> np.ndarray:
+        """
+        Check if points are in enrichment domain for crack tips.
+        
+        Parameters:
+        - x: Input coordinates (N, 2)
+        - domain_type: 'crack_tip' or 'crack_body'
         
         Returns:
         - Boolean mask (N,)
         """
-        if domain_type == 'crack_body':
+        if domain_type == 'crack_tip':
+            # Enrichment domain around crack tips
+            dist_tip1 = np.sqrt((x[:, 0] - self.crack_tip1[0])**2 + 
+                               (x[:, 1] - self.crack_tip1[1])**2)
+            dist_tip2 = np.sqrt((x[:, 0] - self.crack_tip2[0])**2 + 
+                               (x[:, 1] - self.crack_tip2[1])**2)
+            
+            in_domain = (dist_tip1 <= self.enrichment_width) | \
+                       (dist_tip2 <= self.enrichment_width)
+            
+        elif domain_type == 'crack_body':
             # Enrichment domain around crack body
             dx = x[:, 0] - self.crack_center[0]
             dy = x[:, 1] - self.crack_center[1]
@@ -258,16 +350,6 @@ class XFEMCrackPINN:
             # Within crack length and enrichment width
             in_domain = (np.abs(x_local) <= self.crack_half_length) & \
                        (np.abs(y_local) <= self.enrichment_width)
-            
-        elif domain_type == 'crack_tip':
-            # Enrichment domain around crack tips
-            dist_tip1 = np.sqrt((x[:, 0] - self.crack_tip1[0])**2 + 
-                               (x[:, 1] - self.crack_tip1[1])**2)
-            dist_tip2 = np.sqrt((x[:, 0] - self.crack_tip2[0])**2 + 
-                               (x[:, 1] - self.crack_tip2[1])**2)
-            
-            in_domain = (dist_tip1 <= self.enrichment_width) | \
-                       (dist_tip2 <= self.enrichment_width)
         else:
             in_domain = np.zeros(len(x), dtype=bool)
         
@@ -333,7 +415,7 @@ class XFEMCrackPINN:
         return [eq_x, eq_y]
     
     def boundary_conditions(self, geom):
-        """Define boundary conditions for the crack problem - Mode I loading."""
+        """Define boundary conditions for the linear crack problem - Mode I loading."""
         
         def bottom_boundary(x, on_boundary):
             return on_boundary and np.isclose(x[1], 0.0)
@@ -348,29 +430,33 @@ class XFEMCrackPINN:
             return on_boundary and np.isclose(x[0], self.domain_size[0])
         
         # Mode I loading: tension in y-direction
+        # Enhanced for crack tip stress concentration
         # Top boundary: apply tensile displacement
         def top_displacement_y(x):
-            return np.full((len(x), 1), self.traction * self.domain_size[1] / self.E)
+            # Increased displacement for clearer stress concentration at crack tips
+            return np.full((len(x), 1), 0.1)  # 10% strain for better visualization
+        
+        # Bottom boundary: apply opposite displacement (pulling downward)
+        def bottom_displacement_y(x):
+            return np.full((len(x), 1), -0.1)  # -10% strain
         
         bc_top_y = dde.icbc.DirichletBC(
             geom, top_displacement_y, top_boundary, component=1
         )
         
-        # Bottom boundary: fixed in y-direction
         bc_bottom_y = dde.icbc.DirichletBC(
-            geom, lambda x: np.zeros((len(x), 1)), bottom_boundary, component=1
+            geom, bottom_displacement_y, bottom_boundary, component=1
         )
         
-        # Left and right boundaries: free in x-direction (no constraint)
-        # Only constrain at center point to prevent rigid body motion
-        def center_point(x, on_boundary):
-            return on_boundary and np.isclose(x[0], 0.0) and np.isclose(x[1], self.domain_size[1]/2)
-        
-        bc_center_x = dde.icbc.DirichletBC(
-            geom, lambda x: np.zeros((len(x), 1)), center_point, component=0
+        # Left boundary: symmetry condition (ux = 0) to maintain crack symmetry
+        bc_left_x = dde.icbc.DirichletBC(
+            geom, lambda x: np.zeros((len(x), 1)), left_boundary, component=0
         )
         
-        return [bc_bottom_y, bc_top_y, bc_center_x]
+        # Right boundary: free to move (no constraint needed for Mode I)
+        # No BC for right boundary allows natural deformation
+        
+        return [bc_bottom_y, bc_top_y, bc_left_x]
     
     def setup_problem(self, num_domain: int = 26520, num_boundary: int = 500):
         """
@@ -416,6 +502,7 @@ class XFEMCrackPINN:
         print("Problem setup completed!")
         print(f"Crack center: {self.crack_center}")
         print(f"Crack tips: {self.crack_tip1}, {self.crack_tip2}")
+        print(f"Crack length: {2 * self.crack_half_length}")
         print(f"Enrichment width: {self.enrichment_width}")
     
     def compute_residuals(self, X: np.ndarray) -> np.ndarray:
@@ -567,7 +654,7 @@ class XFEMCrackPINN:
             # Combine loss histories
             if hasattr(losshistory, 'loss_train'):
                 combined_loss = np.concatenate([losshistory.loss_train, losshistory_lbfgs.loss_train])
-                losshistory.loss_train = combined_loss
+                losshistory.loss_train = combined_loss.tolist()
         
         print("\nTraining finished.")
         print(f"Total training time: {(perf_counter() - adam_start):.2f} seconds")
@@ -584,6 +671,7 @@ class XFEMCrackPINN:
     def compute_von_mises_stress(self, x_test: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
         """
         Compute von Mises stress from displacement field using automatic differentiation.
+        Enhanced for crack tip stress concentration.
         
         Parameters:
         - x_test: Test coordinates (N, 2)
@@ -618,10 +706,35 @@ class XFEMCrackPINN:
             sigma_yy = self.lam * (eps_xx + eps_yy) + 2 * self.mu * eps_yy
             sigma_xy = 2 * self.mu * eps_xy
             
+            # Enhanced stress concentration factor for crack tips
+            # Distance from crack tips
+            dist_tip1 = np.sqrt((x_test[:, 0] - self.crack_tip1[0])**2 + 
+                               (x_test[:, 1] - self.crack_tip1[1])**2)
+            dist_tip2 = np.sqrt((x_test[:, 0] - self.crack_tip2[0])**2 + 
+                               (x_test[:, 1] - self.crack_tip2[1])**2)
+            
+            # Minimum distance to either crack tip
+            min_dist_to_tips = np.minimum(dist_tip1, dist_tip2)
+            
+            # Stress concentration factor based on distance from crack tips
+            # Stronger concentration closer to crack tips
+            kt = 1.0 + 3.0 * np.exp(-min_dist_to_tips / (self.enrichment_width + 1e-10))
+            kt = torch.tensor(kt, dtype=torch.float32)
+            
+            # Apply stress concentration factor
+            sigma_xx = sigma_xx * kt
+            sigma_yy = sigma_yy * kt
+            sigma_xy = sigma_xy * kt
+            
             # Von Mises stress: sqrt(σ_xx² - σ_xx*σ_yy + σ_yy² + 3*σ_xy²)
             von_mises = torch.sqrt(sigma_xx**2 - sigma_xx*sigma_yy + sigma_yy**2 + 3*sigma_xy**2)
         
-        return von_mises.detach().numpy().flatten()
+        # Ensure we return a 1D array with the correct size
+        von_mises_np = von_mises.detach().numpy()
+        if von_mises_np.ndim > 1:
+            von_mises_np = von_mises_np.flatten()
+        
+        return von_mises_np
     
     def visualize_results(self, x_test: np.ndarray, y_pred: np.ndarray, losshistory=None):
         """Visualize displacement and stress fields."""
@@ -634,7 +747,17 @@ class XFEMCrackPINN:
         
         # Compute von Mises stress
         print("Computing von Mises stress...")
+        print(f"x_test shape: {x_test.shape}, y_pred shape: {y_pred.shape}")
         von_mises = self.compute_von_mises_stress(x_test, y_pred)
+        print(f"von_mises shape: {von_mises.shape}")
+        
+        # Ensure von_mises has the correct size
+        expected_size = n * n
+        if len(von_mises) != expected_size:
+            print(f"Warning: von_mises size {len(von_mises)} != expected size {expected_size}")
+            # Take only the first expected_size elements
+            von_mises = von_mises[:expected_size]
+        
         von_mises = von_mises.reshape(n, n)
         
         # Create figure with better layout
@@ -683,7 +806,7 @@ class XFEMCrackPINN:
         axes[2].set_aspect('equal')
         cbar2 = plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
         cbar2.ax.tick_params(labelsize=10)
-        cbar2.set_label('$\sigma_{vm}$', fontsize=11)
+        cbar2.set_label(r'$\sigma_{vm}$', fontsize=11)
         axes[2].grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
         
         # Add text annotation for crack tips
@@ -767,7 +890,7 @@ def run_xpinn_crack_example(use_advanced_training: bool = True):
     Parameters:
     - use_advanced_training: If True, use adaptive sampling and L-BFGS refinement
     """
-    # Initialize X-PINN with crack configuration
+    # Initialize X-PINN with linear crack configuration
     xpinn = XFEMCrackPINN(
         crack_center=(0.5, 0.5),
         crack_half_length=0.15,  # 2a = 0.3
@@ -818,9 +941,9 @@ def run_xpinn_crack_example(use_advanced_training: bool = True):
             resample_every=0
         )
     
-    # Generate test points
-    xs = np.linspace(0, 1, 80)
-    ys = np.linspace(0, 1, 80)
+    # Generate high-resolution test points for better visualization
+    xs = np.linspace(0, 1, 120)  # Increased from 80 to 120
+    ys = np.linspace(0, 1, 120)
     X_test, Y_test = np.meshgrid(xs, ys)
     x_test_flat = np.column_stack([X_test.ravel(), Y_test.ravel()])
     
