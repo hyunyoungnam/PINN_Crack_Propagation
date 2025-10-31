@@ -398,8 +398,8 @@ This code is provided for research and educational purposes.
 
 For questions or collaborations:
 - **Author**: Hyun-Young Nam
-- **Institution**: [Your Institution]
-- **Email**: [Your Email]
+- **Institution**: Brown University
+- **Email**: hyun_young_nam@bronw.edu
 
 ---
 
