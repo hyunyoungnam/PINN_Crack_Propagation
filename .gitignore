@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# DeepXDE / training outputs
+model/
+model_*/
+*.pt
+*.pth
+*.ckpt
+train.dat
+test.dat
+loss.dat
+
+# Generated figures
+*.png
+*.pdf
+*.svg
+*.eps
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Numpy/data files
+*.npy
+*.npz
+*.csv
+*.h5
+*.hdf5
+
+# Claude
+CLAUDE.md

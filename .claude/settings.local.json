@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(python3 -c \"import deepxde as dde; print\\(dir\\(dde.icbc\\)\\)\")",
+      "Bash(python3:*)",
+      "Bash(pip3 list:*)",
+      "Bash(pip3 show:*)",
+      "Bash(pip3 install:*)",
+      "Bash(pip3 download:*)",
+      "Bash(mkdir -p dxde_extracted)",
+      "Bash(unzip -o /tmp/dxde_pkg/deepxde-1.15.0-py3-none-any.whl -d /tmp/dxde_extracted)",
+      "Bash(cd:*)",
+      "Bash(pip show:*)",
+      "Read(//usr/**)",
+      "Read(//home/**)",
+      "Bash(/mnt/c/Users/south/AppData/Local/Microsoft/WindowsApps/python3.13.exe run_experiments.py --config configs/mode1_quick.yaml 2>&1)",
+      "Bash(/mnt/c/Users/south/AppData/Local/Microsoft/WindowsApps/python3.13.exe run_experiments.py --config configs/mode1_production.yaml 2>&1)",
+      "Bash(kill 6075 6095)",
+      "Bash(/mnt/c/Users/south/AppData/Local/Microsoft/WindowsApps/python3.13.exe run_experiments.py --config configs/mode1_medium.yaml 2>&1)"
+    ]
+  }
+}
